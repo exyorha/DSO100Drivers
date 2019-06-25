@@ -80,6 +80,7 @@ struct dso100fb_softc {
   void *fb_base;
   bus_dmamap_t dma_map;
   bus_addr_t fb_phys;
+  device_t fbd;
 };
 
 static void dso100fb_intr(void *arg) {
@@ -189,9 +190,6 @@ static int dso100fb_configure(
   uint32_t ifctrl = 0;
   size_t framebuffer_size;
 
-  uint32_t *ptr;
-  size_t index;
-  
   bus_write_4(
     softc->mem_res,
     DSO100FB_REG_HTIMING1,
@@ -309,14 +307,22 @@ static int dso100fb_configure(
 
   bus_write_4(
     softc->mem_res,
-    DSO100FB_REG_FB_END,
-    softc->fb_phys + softc->fb_info.fb_size - 4
+    DSO100FB_REG_FB_LENGTH,
+    softc->fb_info.fb_size
   );
 
-  ptr = softc->fb_base;
-  for(index = 0; index < softc->fb_info.fb_size / 4; index++) {
-    ptr[index] = index;
+  softc->fbd = device_add_child(softc->dev, "fbd",
+    device_get_unit(softc->dev));
+
+  if(softc->fbd == NULL) {
+    err = ENOMEM;
+    goto dmamap_unload;
   }
+
+  err = device_probe_and_attach(softc->fbd);
+  if(err != 0) {
+    goto release_fbd;
+	}
 
   dso100fb_signal_and_wait_for_interrupts(
     softc,
@@ -325,6 +331,12 @@ static int dso100fb_configure(
   );
 
   return 0;
+
+release_fbd:
+  device_delete_child(softc->dev, softc->fbd);
+
+dmamap_unload:
+  bus_dmamap_unload(softc->dma_tag, softc->dma_map);
 
 free_dmamem:
   bus_dmamem_free(softc->dma_tag, softc->fb_base, softc->dma_map);
@@ -403,6 +415,7 @@ static int dso100fb_detach(device_t dev) {
     DSO100FB_ISR_STOPPED
   );
 
+  device_delete_child(softc->dev, softc->fbd);
   bus_dmamap_unload(softc->dma_tag, softc->dma_map);
   bus_dmamem_free(softc->dma_tag, softc->fb_base, softc->dma_map);
   bus_dma_tag_destroy(softc->dma_tag);
