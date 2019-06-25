@@ -189,6 +189,9 @@ static int dso100fb_configure(
   uint32_t ifctrl = 0;
   size_t framebuffer_size;
 
+  uint32_t *ptr;
+  size_t index;
+  
   bus_write_4(
     softc->mem_res,
     DSO100FB_REG_HTIMING1,
@@ -307,10 +310,13 @@ static int dso100fb_configure(
   bus_write_4(
     softc->mem_res,
     DSO100FB_REG_FB_END,
-    softc->fb_phys + softc->fb_info.fb_size - 1
+    softc->fb_phys + softc->fb_info.fb_size - 4
   );
 
-  memset(softc->fb_base, 0x55, softc->fb_info.fb_size);
+  ptr = softc->fb_base;
+  for(index = 0; index < softc->fb_info.fb_size / 4; index++) {
+    ptr[index] = index;
+  }
 
   dso100fb_signal_and_wait_for_interrupts(
     softc,
