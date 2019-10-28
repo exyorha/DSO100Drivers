@@ -145,14 +145,6 @@ static int dso100fb_read_panel_config(
   return 0;
 }
 
-static void dso100fb_dmamap_cb(void *arg, bus_dma_segment_t *segs, int nseg, int err) {
-  bus_addr_t *addr = arg;
-
-  if(err == 0) {
-      addr[0] = segs[0].ds_addr;
-  }
-}
-
 static void dso100fb_signal_and_wait_for_interrupts(
   struct dso100fb_softc *softc,
   uint32_t signal,
