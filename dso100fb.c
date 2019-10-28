@@ -18,6 +18,11 @@
 
 #include <dev/vt/vt.h>
 
+#include <vm/vm.h>
+#include <vm/vm_extern.h>
+#include <vm/vm_kern.h>
+#include <vm/pmap.h>
+
 #include "fb_if.h"
 
 #include "DSO100FB.h"
@@ -78,7 +83,7 @@ struct dso100fb_softc {
   void *intr_cookie;
   bus_dma_tag_t dma_tag;
   void *fb_base;
-  bus_dmamap_t dma_map;
+  size_t fb_size;
   bus_addr_t fb_phys;
   device_t fbd;
 };
@@ -250,51 +255,17 @@ static int dso100fb_configure(
   softc->fb_info.fb_bpp = 32;
   softc->fb_info.fb_stride = cfg->width * (softc->fb_info.fb_bpp / 8);
   softc->fb_info.fb_size = softc->fb_info.fb_stride * softc->fb_info.fb_height;
-
+  softc->fb_info.fb_flags = FB_FLAG_MEMATTR;
+  softc->fb_info.fb_memattr = VM_MEMATTR_WRITE_COMBINING;
   framebuffer_size = round_page(softc->fb_info.fb_size);
+  softc->fb_size = framebuffer_size;
 
-  err = bus_dma_tag_create(
-    bus_get_dma_tag(softc->dev),
-    4, 0,
-    BUS_SPACE_MAXADDR_32BIT,
-    BUS_SPACE_MAXADDR,
-    NULL, NULL,
-    framebuffer_size, 1,
-    framebuffer_size, 0,
-    NULL, NULL,
-    &softc->dma_tag
-  );
-
-  if(err != 0)
-    return err;
-
-  err = bus_dmamem_alloc(softc->dma_tag,
-    &softc->fb_base,
-    BUS_DMA_COHERENT,
-    &softc->dma_map
-  );
-
-  if(err != 0)
-    goto release_dma_tag;
-
-  softc->fb_phys = 0;
-
-  err = bus_dmamap_load(softc->dma_tag,
-    softc->dma_map,
-    softc->fb_base,
-    framebuffer_size,
-    dso100fb_dmamap_cb,
-    &softc->fb_phys,
-    BUS_DMA_NOWAIT
-  );
-
-  if(err != 0)
-    goto free_dmamem;
-
-  if(softc->fb_phys == 0) {
-    err = EIO;
-    goto free_dmamem;
+  softc->fb_base = (void *)kmem_alloc_contig(framebuffer_size, M_NOWAIT | M_ZERO, 0, ~0, 4096, 0, VM_MEMATTR_WRITE_COMBINING);
+  if(softc->fb_base == NULL) {
+    return ENOMEM;
   }
+
+  softc->fb_phys = pmap_kextract((uintptr_t)softc->fb_base);
 
   softc->fb_info.fb_vbase = (uintptr_t)softc->fb_base;
   softc->fb_info.fb_pbase = softc->fb_phys;
@@ -316,7 +287,7 @@ static int dso100fb_configure(
 
   if(softc->fbd == NULL) {
     err = ENOMEM;
-    goto dmamap_unload;
+    goto free_fb;
   }
 
   err = device_probe_and_attach(softc->fbd);
@@ -335,14 +306,9 @@ static int dso100fb_configure(
 release_fbd:
   device_delete_child(softc->dev, softc->fbd);
 
-dmamap_unload:
-  bus_dmamap_unload(softc->dma_tag, softc->dma_map);
+free_fb:
+  kmem_free(softc->fb_info.fb_vbase, softc->fb_size);
 
-free_dmamem:
-  bus_dmamem_free(softc->dma_tag, softc->fb_base, softc->dma_map);
-
-release_dma_tag:
-  bus_dma_tag_destroy(softc->dma_tag);
   return err;
 }
 
@@ -416,9 +382,7 @@ static int dso100fb_detach(device_t dev) {
   );
 
   device_delete_child(softc->dev, softc->fbd);
-  bus_dmamap_unload(softc->dma_tag, softc->dma_map);
-  bus_dmamem_free(softc->dma_tag, softc->fb_base, softc->dma_map);
-  bus_dma_tag_destroy(softc->dma_tag);
+  kmem_free(softc->fb_info.fb_vbase, softc->fb_size);
   bus_teardown_intr(dev, softc->irq_res, softc->intr_cookie);
   bus_release_resource(dev, SYS_RES_IRQ, softc->irq_rid, softc->irq_res);
   bus_release_resource(dev, SYS_RES_MEMORY, softc->mem_rid, softc->mem_res);
